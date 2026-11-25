@@ -36,10 +36,10 @@ function vnoise(x, y) { const xi = Math.floor(x), yi = Math.floor(y), xf = x - x
 function fbm(x, y, o = 5) { let a = 0, f = 1, s = 0.5, n = 0; for (let i = 0; i < o; i++) { a += s * vnoise(x * f + i * 17.3, y * f - i * 9.1); n += s; f *= 2.03; s *= 0.5; } return a / n; }
 
 // ---------- world layout (1 unit ≈ 1 cm on the table) ----------
-const MAP = { w: 76, h: 57 };                // centred at origin, x right, z toward camera
+const MAP = { w: 80, h: 80 * 3770 / 5000 };                // centred at origin, x right, z toward camera
 const mapXZ = (mx, my) => [mx / 100 - MAP.w / 2, my / 100 - MAP.h / 2];
-const PINX = 1175 / 1448 * MAP.w - MAP.w / 2, PINZ = 840 / 1086 * MAP.h - MAP.h / 2;
-const DOC = { x: 52, z: -6, w: 24, h: 66 };
+const PINX = 3390 / 5000 * MAP.w - MAP.w / 2, PINZ = 2755 / 3770 * MAP.h - MAP.h / 2;
+const DOC = { x: 54, z: -6, w: 24, h: 66 };
 const DX = -6, DZ = 22;
 
 // ---------- textures ----------
@@ -357,7 +357,7 @@ window.views = {
 };
 window.ready = (async () => {
   await Promise.all(['700 10px Playfair', '700 10px PlayfairI', '600 10px Plex'].map(f => document.fonts.load(f)));
-  window.MAPIMG = await new Promise(r => { const im = new Image(); im.onload = () => r(im); im.src = 'assets/map.jpg'; });
+  window.MAPIMG = await new Promise(r => { const im = new Image(); im.onload = () => r(im); im.src = 'assets/map_ams.jpg'; });
   buildScene(); window.setOverlays(30); return true;
 })();
 </script></body></html>
