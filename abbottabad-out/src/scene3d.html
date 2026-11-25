@@ -1,0 +1,363 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+@font-face{font-family:Playfair;font-weight:700;src:url(fonts/playfair-display-latin-700-normal.woff2)}
+@font-face{font-family:Playfair;font-weight:900;src:url(fonts/playfair-display-latin-900-normal.woff2)}
+@font-face{font-family:PlayfairI;font-weight:700;src:url(fonts/playfair-display-latin-700-italic.woff2)}
+@font-face{font-family:Plex;font-weight:600;src:url(fonts/ibm-plex-mono-latin-600-normal.woff2)}
+@font-face{font-family:Plex;font-weight:700;src:url(fonts/ibm-plex-mono-latin-600-normal.woff2)}
+@font-face{font-family:Elite;src:url(fonts/special-elite-latin-400-normal.woff2)}
+html,body{margin:0;background:#000}canvas{display:block}
+</style>
+<script type="importmap">{"imports":{"three":"./lib/three.module.min.js","three/addons/":"./lib/jsm/"}}</script>
+<script src="cues.js"></script>
+</head><body>
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+const P = new URLSearchParams(location.search);
+const W = +(P.get('w') || 3840), H = Math.round(W * 1646 / 3840 / 2) * 2;
+const C = window.CUES;
+
+// ---------- utils ----------
+const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const smoother = t => { t = clamp(t); return t * t * t * (t * (t * 6 - 15) + 10); };
+function rng(seed) { return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const mk = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
+const NR = rng(7), PERM = new Float32Array(512 * 512).map(() => NR());
+function vnoise(x, y) { const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi, g = (i, j) => PERM[((j & 511) << 9) | (i & 511)], u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf); return lerp(lerp(g(xi, yi), g(xi + 1, yi), u), lerp(g(xi, yi + 1), g(xi + 1, yi + 1), u), v); }
+function fbm(x, y, o = 5) { let a = 0, f = 1, s = 0.5, n = 0; for (let i = 0; i < o; i++) { a += s * vnoise(x * f + i * 17.3, y * f - i * 9.1); n += s; f *= 2.03; s *= 0.5; } return a / n; }
+
+// ---------- world layout (1 unit ≈ 1 cm on the table) ----------
+const MAP = { w: 80, h: 80 * 3770 / 5000 };                // centred at origin, x right, z toward camera
+const mapXZ = (mx, my) => [mx / 100 - MAP.w / 2, my / 100 - MAP.h / 2];
+const PINX = 3390 / 5000 * MAP.w - MAP.w / 2, PINZ = 2755 / 3770 * MAP.h - MAP.h / 2;
+const DOC = { x: 54, z: -6, w: 24, h: 66 };
+const DX = -6, DZ = 22;
+
+// ---------- textures ----------
+function heightF(x, y) {
+  const n = fbm(x / 1500, y / 1500, 5), r = 1 - Math.abs(fbm(x / 2600 + 3, y / 2600 - 2, 3) * 2 - 1);
+  const north = 1 - y / 5200, dv = Math.hypot(x - 5200, (y - 2600) * 1.3) / 1400;
+  return n * 0.55 + r * 0.25 + north * 0.55 + x / 7600 * 0.12 - (1 - north) * 0.1 - 0.16 * Math.exp(-dv * dv);
+}
+function parchment(ctx, w, h, seed, warm = 1) {
+  const id = ctx.createImageData(w, h), r = rng(seed);
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    const n = fbm(i / 180, j / 180, 5), f = fbm(i / 5, j / 70, 2), g = r();
+    const ex = Math.min(i, w - 1 - i) / w, ey = Math.min(j, h - 1 - j) / h, edge = Math.pow(clamp(1 - Math.min(ex * 9, ey * 9)), 2.2);
+    const k = (j * w + i) * 4, v = 0.78 + (n - 0.5) * 0.28 + (f - 0.5) * 0.06 + (g - 0.5) * 0.05 - edge * 0.45;
+    id.data[k] = 238 * v; id.data[k + 1] = (214 - 6 * warm) * v; id.data[k + 2] = (168 - 22 * warm) * v; id.data[k + 3] = 255;
+  }
+  ctx.putImageData(id, 0, 0);
+  // stains
+  ctx.globalCompositeOperation = 'multiply';
+  for (let s = 0; s < 7; s++) {
+    const x = r() * w, y = r() * h, R = (0.04 + r() * 0.09) * w;
+    const g2 = ctx.createRadialGradient(x, y, R * 0.6, x, y, R);
+    g2.addColorStop(0, 'rgba(200,160,110,.10)'); g2.addColorStop(0.92, 'rgba(150,100,55,.35)'); g2.addColorStop(1, 'rgba(150,100,55,0)');
+    ctx.fillStyle = g2; ctx.beginPath(); ctx.arc(x, y, R, 0, 7); ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+}
+function wiggle(pts, seed, amp) { const r = rng(seed); let p = pts; for (let it = 0; it < 6; it++) { const q = [p[0]]; for (let i = 0; i < p.length - 1; i++) { const [ax, ay] = p[i], [bx, by] = p[i + 1], L = Math.hypot(bx - ax, by - ay), nx = -(by - ay) / L, ny = (bx - ax) / L, d = (r() - 0.5) * L * amp; q.push([(ax + bx) / 2 + nx * d, (ay + by) / 2 + ny * d], p[i + 1]); } p = q; amp *= 0.82; } return p; }
+let mapCanvas, mapCtx, mapBase;
+function buildMapTexture() {
+  const S = 4096 / 7600, w = 4096, h = Math.round(5200 * S);
+  mapBase = mk(w, h); const x = mapBase.getContext('2d');
+  parchment(x, w, h, 3);
+  x.save(); x.scale(S, S);
+  // hill shading (soft hatching feel)
+  const hs = mk(760, 520), hx = hs.getContext('2d'), hd = hx.createImageData(760, 520);
+  for (let j = 0; j < 520; j++) for (let i = 0; i < 760; i++) {
+    const X = i * 10, Y = j * 10, dx = heightF(X + 20, Y) - heightF(X - 20, Y), dy = heightF(X, Y + 20) - heightF(X, Y - 20);
+    const sh = clamp(0.5 + (-dx - dy) * 6), k = (j * 760 + i) * 4, a = Math.abs(sh - 0.5) * 2;
+    const c = sh < 0.5 ? [70, 45, 20] : [255, 245, 220];
+    hd.data[k] = c[0]; hd.data[k + 1] = c[1]; hd.data[k + 2] = c[2]; hd.data[k + 3] = a * 120;
+  }
+  hx.putImageData(hd, 0, 0); x.drawImage(hs, 0, 0, 7600, 5200);
+  // contours
+  const GS = 40, GX = 191, GY = 131, Hh = new Float32Array(GX * GY);
+  for (let j = 0; j < GY; j++) for (let i = 0; i < GX; i++) Hh[j * GX + i] = heightF(i * GS, j * GS);
+  let li = 0;
+  for (let L = 0.18; L < 1.3; L += 0.045, li++) {
+    x.beginPath();
+    for (let j = 0; j < GY - 1; j++) for (let i = 0; i < GX - 1; i++) {
+      const a = Hh[j * GX + i], b = Hh[j * GX + i + 1], c = Hh[(j + 1) * GX + i + 1], d = Hh[(j + 1) * GX + i];
+      const idx = (a > L) | ((b > L) << 1) | ((c > L) << 2) | ((d > L) << 3); if (idx === 0 || idx === 15) continue;
+      const x0 = i * GS, y0 = j * GS, e = [[x0 + GS * (L - a) / (b - a), y0], [x0 + GS, y0 + GS * (L - b) / (c - b)], [x0 + GS * (L - d) / (c - d), y0 + GS], [x0, y0 + GS * (L - a) / (d - a)]];
+      const segs = { 1: [[3, 0]], 2: [[0, 1]], 3: [[3, 1]], 4: [[1, 2]], 5: [[3, 0], [1, 2]], 6: [[0, 2]], 7: [[3, 2]], 8: [[2, 3]], 9: [[0, 2]], 10: [[0, 1], [2, 3]], 11: [[1, 2]], 12: [[1, 3]], 13: [[0, 1]], 14: [[0, 3]] }[idx];
+      for (const [s, t] of segs) { x.moveTo(e[s][0], e[s][1]); x.lineTo(e[t][0], e[t][1]); }
+    }
+    x.strokeStyle = li % 4 === 0 ? 'rgba(92,58,28,.55)' : 'rgba(110,72,38,.28)'; x.lineWidth = li % 4 === 0 ? 7 : 3.5; x.stroke();
+  }
+  // rivers: inked
+  x.lineCap = x.lineJoin = 'round';
+  for (const [pts, wd, sd] of [[[[2300, -50], [2650, 900], [2200, 1800], [2500, 2600], [1900, 3600], [1450, 5250]], 34, 11], [[[7650, 2700], [6800, 3250], [6450, 4000], [6950, 5250]], 24, 12], [[[6050, -50], [6250, 1300], [6650, 2500], [6800, 3250]], 13, 13]]) {
+    const p = wiggle(pts, sd, 0.35); x.beginPath(); p.forEach(([a, b], i) => i ? x.lineTo(a, b) : x.moveTo(a, b));
+    x.strokeStyle = 'rgba(40,62,70,.85)'; x.lineWidth = wd; x.stroke();
+    x.strokeStyle = 'rgba(120,150,150,.35)'; x.lineWidth = wd * 2.6; x.globalCompositeOperation = 'multiply'; x.stroke(); x.globalCompositeOperation = 'source-over';
+  }
+  // road (old map red)
+  const rd = wiggle([[3600, -50], [4300, 1200], [4950, 2050], [5200, 2600], [5000, 3500], [4500, 5250]], 21, 0.12);
+  x.beginPath(); rd.forEach(([a, b], i) => i ? x.lineTo(a, b) : x.moveTo(a, b));
+  x.setLineDash([60, 30]); x.strokeStyle = 'rgba(150,45,30,.7)'; x.lineWidth = 12; x.stroke(); x.setLineDash([]);
+  // graticule + neat line
+  x.strokeStyle = 'rgba(80,55,30,.18)'; x.lineWidth = 4;
+  for (let gx = 950; gx < 7600; gx += 1300) { x.beginPath(); x.moveTo(gx, 0); x.lineTo(gx, 5200); x.stroke(); }
+  for (let gy = 650; gy < 5200; gy += 1300) { x.beginPath(); x.moveTo(0, gy); x.lineTo(7600, gy); x.stroke(); }
+  x.strokeStyle = 'rgba(60,38,20,.75)'; x.lineWidth = 16; x.strokeRect(150, 150, 7300, 4900);
+  x.lineWidth = 5; x.strokeRect(205, 205, 7190, 4790);
+  // checker border
+  for (let k = 0; k < 7300; k += 200) if ((k / 200) % 2 === 0) { x.fillStyle = 'rgba(60,38,20,.6)'; x.fillRect(150 + k, 150, 100, 55); x.fillRect(150 + k, 4995, 100, 55); }
+  x.restore();
+  mapCanvas = mk(w, h); mapCtx = mapCanvas.getContext('2d');
+  mapCtx.drawImage(mapBase, 0, 0);
+}
+function bumpTexture(w, h, seed, folds) {
+  const c = mk(w, h), x = c.getContext('2d'), id = x.createImageData(w, h), r = rng(seed);
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    const v = 128 + (fbm(i / 90, j / 90, 4) - 0.5) * 60 + (fbm(i / 3, j / 40, 2) - 0.5) * 30 + (r() - 0.5) * 14;
+    const k = (j * w + i) * 4; id.data[k] = id.data[k + 1] = id.data[k + 2] = v; id.data[k + 3] = 255;
+  }
+  x.putImageData(id, 0, 0);
+  for (const f of folds) { const g = x.createLinearGradient(f[0], f[1], f[2], f[3]); x.strokeStyle = 'rgba(255,255,255,.5)'; x.lineWidth = 6; x.beginPath(); x.moveTo(f[0], f[1]); x.lineTo(f[2], f[3]); x.stroke(); x.strokeStyle = 'rgba(0,0,0,.35)'; x.lineWidth = 5; x.beginPath(); x.moveTo(f[0] + 5, f[1] + 5); x.lineTo(f[2] + 5, f[3] + 5); x.stroke(); }
+  return c;
+}
+function woodTexture() {
+  const w = 2048, h = 2048, c = mk(w, h), x = c.getContext('2d'), id = x.createImageData(w, h);
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    const plank = Math.floor(j / 256), g = fbm(i / 420 + plank * 7, j / 14, 4), ring = Math.sin(g * 26 + i / 260);
+    const seam = (j % 256) < 3 ? 0.45 : 1;
+    const v = (0.42 + ring * 0.07 + (g - 0.5) * 0.25 + plank % 3 * 0.03) * seam;
+    const k = (j * w + i) * 4; id.data[k] = 120 * v; id.data[k + 1] = 72 * v; id.data[k + 2] = 40 * v; id.data[k + 3] = 255;
+  }
+  x.putImageData(id, 0, 0); return c;
+}
+// document texture
+const ROWS = 30, NAMED = { 1: 'Cars', 3: 'Chicken Little', 5: 'BBC Wildlife Documentary' };
+let docCanvas, docCtx, docBase;
+const DPX = 72; // px per unit on document
+function buildDocTexture() {
+  const w = DOC.w * DPX, h = DOC.h * DPX; docBase = mk(w, h); const x = docBase.getContext('2d');
+  parchment(x, w, h, 9, 0.2);
+  const g = x.createLinearGradient(0, 0, 0, h); g.addColorStop(0, 'rgba(255,250,235,.35)'); g.addColorStop(1, 'rgba(255,250,235,.25)');
+  x.fillStyle = g; x.fillRect(0, 0, w, h);
+  const r = rng(99), grey = 'rgba(90,80,66,.38)', u = DPX / 100;
+  x.fillStyle = 'rgba(70,60,50,.55)'; x.fillRect(160 * u, 230 * u, 980 * u, 64 * u);
+  x.fillStyle = grey; x.fillRect(160 * u, 340 * u, 620 * u, 30 * u); x.fillRect(160 * u, 400 * u, 760 * u, 30 * u);
+  x.fillStyle = 'rgba(60,50,40,.45)'; x.fillRect(160 * u, 640 * u, 2080 * u, 6 * u);
+  for (let i = 0; i <= ROWS; i++) {
+    const y = (900 + i * 165) * u; x.fillStyle = grey; x.fillRect(160 * u, y - 15 * u, 110 * u, 30 * u);
+    if (!NAMED[i] && i < ROWS) x.fillRect(340 * u, y - 15 * u, (600 + r() * 1150) * u, 30 * u);
+  }
+  x.fillStyle = 'rgba(60,50,40,.45)'; x.fillRect(160 * u, (900 + ROWS * 165 + 360) * u, 2080 * u, 6 * u);
+  docCanvas = mk(w, h); docCtx = docCanvas.getContext('2d'); docCtx.drawImage(docBase, 0, 0);
+}
+
+// ---------- scene ----------
+let renderer, scene, camera, composer, bokehPass, gradePass, spot, mapTex, docTex, dust, stringMesh, pins = {}, compound, discs = [], docMesh, mapMesh;
+function paperGeometry(w, h, segX, segY, curl, seed) {
+  const g = new THREE.PlaneGeometry(w, h, segX, segY); g.rotateX(-Math.PI / 2);
+  const p = g.attributes.position, r = rng(seed);
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), z = p.getZ(i), ex = Math.abs(x) / (w / 2), ez = Math.abs(z) / (h / 2);
+    const y = (fbm(x / 9 + seed, z / 9, 3) - 0.5) * 0.25 + Math.pow(Math.max(ex, ez), 6) * curl;
+    p.setY(i, y);
+  }
+  g.computeVertexNormals(); return g;
+}
+function buildScene() {
+  renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+  renderer.setSize(W, H, false); renderer.setPixelRatio(1);
+  renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 0.72;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  document.body.appendChild(renderer.domElement);
+  scene = new THREE.Scene(); scene.background = new THREE.Color(0x050302);
+  scene.fog = new THREE.FogExp2(0x0b0705, 0.0065);
+  const pm = new THREE.PMREMGenerator(renderer); scene.environment = pm.fromScene(new RoomEnvironment(), 0.04).texture;
+  scene.environmentIntensity = 0.08;
+  camera = new THREE.PerspectiveCamera(28, W / H, 1, 2000);
+
+  // table
+  const wt = new THREE.CanvasTexture(woodTexture()); wt.wrapS = wt.wrapT = THREE.RepeatWrapping; wt.repeat.set(4, 4); wt.colorSpace = THREE.SRGBColorSpace; wt.anisotropy = 8;
+  const table = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), new THREE.MeshStandardMaterial({ map: wt, roughness: 0.55, metalness: 0 }));
+  table.rotation.x = -Math.PI / 2; table.position.y = -0.05; table.receiveShadow = true; scene.add(table);
+
+  // map
+  mapTex = new THREE.CanvasTexture(window.MAPIMG); mapTex.colorSpace = THREE.SRGBColorSpace; mapTex.anisotropy = 8;
+  const mb = new THREE.CanvasTexture(bumpTexture(1024, 768, 4, [[0, 384, 1024, 384], [512, 0, 512, 768]]));
+  mapMesh = new THREE.Mesh(paperGeometry(MAP.w, MAP.h, 160, 120, 0.9, 1), new THREE.MeshStandardMaterial({ map: mapTex, bumpMap: mb, bumpScale: 0.6, roughness: 0.92 }));
+  mapMesh.receiveShadow = true; mapMesh.castShadow = true; mapMesh.position.y = 0.05; scene.add(mapMesh);
+
+  // document
+  buildDocTexture();
+  docTex = new THREE.CanvasTexture(docCanvas); docTex.colorSpace = THREE.SRGBColorSpace; docTex.anisotropy = 8;
+  const db = new THREE.CanvasTexture(bumpTexture(512, 1400, 8, [[0, 460, 512, 470]]));
+  docMesh = new THREE.Mesh(paperGeometry(DOC.w, DOC.h, 60, 160, 0.6, 3), new THREE.MeshStandardMaterial({ map: docTex, bumpMap: db, bumpScale: 0.4, roughness: 0.88 }));
+  docMesh.position.set(DOC.x, 0.25, DOC.z); docMesh.castShadow = docMesh.receiveShadow = true; scene.add(docMesh);
+
+  // compound miniature
+  compound = new THREE.Group();
+  const plaster = new THREE.MeshStandardMaterial({ color: 0xcbbd9f, roughness: 0.85 });
+  const roofM = new THREE.MeshStandardMaterial({ color: 0xb9ab8e, roughness: 0.9 });
+  const groundM = new THREE.MeshStandardMaterial({ color: 0x8a7a58, roughness: 1 });
+  const treeM = new THREE.MeshStandardMaterial({ color: 0x3f4a2a, roughness: 1 });
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(4.4, 4.7, 0.35, 7), groundM); base.position.y = 0.17; base.receiveShadow = base.castShadow = true; compound.add(base);
+  const wallPts = [[-2.6, -1.8], [2.0, -2.0], [2.9, 0.3], [1.3, 2.0], [-2.3, 1.75]];
+  for (let i = 0; i < wallPts.length; i++) {
+    const [ax, az] = wallPts[i], [bx, bz] = wallPts[(i + 1) % wallPts.length], L = Math.hypot(bx - ax, bz - az);
+    const wl = new THREE.Mesh(new THREE.BoxGeometry(L, 0.75, 0.12), plaster);
+    wl.position.set((ax + bx) / 2, 0.72, (az + bz) / 2); wl.rotation.y = -Math.atan2(bz - az, bx - ax); wl.castShadow = wl.receiveShadow = true; compound.add(wl);
+  }
+  const inner = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.6, 3.6), plaster); inner.position.set(-0.6, 0.65, 0); inner.rotation.y = 0.1; inner.castShadow = true; compound.add(inner);
+  const box = (w, h, d, x, z, ry = 0) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), plaster); m.position.set(x, 0.35 + h / 2, z); m.rotation.y = ry; m.castShadow = m.receiveShadow = true; compound.add(m); return m; };
+  box(1.8, 1.9, 1.4, 0.7, -0.5, 0.05); box(1.5, 0.25, 1.1, 0.7, -0.5, 0.05).position.y = 2.38; box(1.0, 0.8, 0.9, -1.6, 0.6, 0.05);
+  const r = rng(5);
+  for (let i = 0; i < 7; i++) { const t = new THREE.Mesh(new THREE.SphereGeometry(0.28 + r() * 0.18, 10, 8), treeM); t.position.set(-2.1 + r() * 1.2, 0.75, -1.3 + r() * 2.6); t.castShadow = true; compound.add(t); }
+  for (let i = 0; i < 9; i++) { const a = r() * 6.28, d = 3.4 + r() * 0.8; const h2 = new THREE.Mesh(new THREE.BoxGeometry(0.6 + r() * 0.5, 0.4 + r() * 0.4, 0.5 + r() * 0.4), roofM); h2.position.set(Math.cos(a) * d, 0.55, Math.sin(a) * d); h2.rotation.y = r(); h2.castShadow = h2.receiveShadow = true; compound.add(h2); }
+  compound.position.set(PINX - 7.5, 0.1, PINZ - 6.5); compound.rotation.y = -0.25; scene.add(compound);
+
+  // pins
+  const mkPin = (x, z) => {
+    const g = new THREE.Group();
+    const needle = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.02, 2.6, 8), new THREE.MeshStandardMaterial({ color: 0xcfcfcf, metalness: 1, roughness: 0.25 }));
+    needle.position.y = 1.3; needle.castShadow = true; g.add(needle);
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.42, 32, 24), new THREE.MeshPhysicalMaterial({ color: 0xc0201a, roughness: 0.18, clearcoat: 1, clearcoatRoughness: 0.08 }));
+    head.position.y = 2.75; head.castShadow = true; g.add(head);
+    g.position.set(x, 0.1, z); g.rotation.z = 0.12; g.rotation.x = -0.08; scene.add(g); return g;
+  };
+  pins.abb = mkPin(PINX, PINZ);
+  pins.doc = mkPin(DOC.x - DOC.w / 2 + 2.1, DOC.z - DOC.h / 2 + 59.25 + 0.75);
+
+  // discs + cases
+  const caseM = new THREE.MeshPhysicalMaterial({ color: 0x0d0d0e, roughness: 0.25, clearcoat: 0.6 });
+
+  for (const [dx, dz, ry] of [[-1.9, -0.1, -0.22], [2.3, 0.6, 0.17]]) {
+    const c = new THREE.Mesh(new THREE.BoxGeometry(5.4, 0.7, 6.8), caseM); c.position.set(DX + dx, 0.45, DZ + dz); c.rotation.y = ry; c.castShadow = c.receiveShadow = true; scene.add(c);
+    const lab = new THREE.Mesh(new THREE.PlaneGeometry(4.0, 1.2), new THREE.MeshStandardMaterial({ color: 0xd9d2c4, roughness: 0.9 })); lab.rotation.x = -Math.PI / 2; lab.position.set(0, 0.36, -2.2); c.add(lab);
+  }
+  const discM = new THREE.MeshPhysicalMaterial({ color: 0xc9c6c0, metalness: 0.9, roughness: 0.22, iridescence: 0.25, iridescenceIOR: 1.3, iridescenceThicknessRange: [300, 500] });
+  const topM = new THREE.MeshStandardMaterial({ color: 0xe9e5dc, roughness: 0.75 });
+  for (const [dx, dz, y] of [[-2.5, 1.2, 0.9], [1.9, -1.2, 0.95], [0.2, 1.9, 1.0]]) {
+    const d = new THREE.Mesh(new THREE.CylinderGeometry(2.5, 2.5, 0.12, 64), [discM, topM, discM]);
+    d.position.set(DX + dx, y, DZ + dz); d.castShadow = d.receiveShadow = true; scene.add(d); discs.push(d);
+  }
+
+  // red string (tube along a sagging curve)
+  const A = pins.doc.position.clone().setY(2.2), B = pins.abb.position.clone().setY(2.2);
+  const mid = A.clone().lerp(B, 0.5); mid.y = 1.2; mid.x -= 4; mid.z += 6;
+  const curve = new THREE.QuadraticBezierCurve3(A, mid, B);
+  stringMesh = new THREE.Mesh(new THREE.TubeGeometry(curve, 200, 0.07, 8, false), new THREE.MeshStandardMaterial({ color: 0xa8150f, roughness: 0.7 }));
+  stringMesh.castShadow = true; scene.add(stringMesh);
+
+  // lights: one warm lamp + faint cool fill
+  spot = new THREE.SpotLight(0xffc48a, 2600, 0, 0.36, 0.9, 1.6);
+  spot.castShadow = true; spot.shadow.mapSize.set(4096, 4096); spot.shadow.bias = -0.0002; spot.shadow.radius = 6;
+  spot.shadow.camera.near = 20; spot.shadow.camera.far = 300;
+  scene.add(spot); scene.add(spot.target);
+  scene.add(new THREE.HemisphereLight(0x5f6f88, 0x120a05, 0.06));
+
+  // dust motes in the lamp beam
+  const N = 1400, pos = new Float32Array(N * 3), rr = rng(11);
+  for (let i = 0; i < N; i++) { pos[i * 3] = (rr() - 0.5) * 120; pos[i * 3 + 1] = rr() * 40; pos[i * 3 + 2] = (rr() - 0.5) * 100; }
+  const dg = new THREE.BufferGeometry(); dg.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  dust = new THREE.Points(dg, new THREE.PointsMaterial({ color: 0xffd9a8, size: 0.09, transparent: true, opacity: 0.55, depthWrite: false, blending: THREE.AdditiveBlending }));
+  scene.add(dust);
+
+  // post
+  composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  composer.addPass(new UnrealBloomPass(new THREE.Vector2(W, H), 0.22, 0.6, 0.82));
+  bokehPass = new ShaderPass(DOFShader); composer.addPass(bokehPass);
+  composer.addPass(new OutputPass());
+  gradePass = new ShaderPass(GradeShader); composer.addPass(gradePass);
+}
+// depth-of-field from the depth buffer via a second render target
+const DOFShader = {
+  uniforms: { tDiffuse: { value: null }, tDepth: { value: null }, focus: { value: 0.5 }, range: { value: 0.1 }, maxR: { value: 14 }, res: { value: new THREE.Vector2(W, H) }, near: { value: 1 }, far: { value: 2000 } },
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.); }`,
+  fragmentShader: `uniform sampler2D tDiffuse, tDepth; uniform float focus, range, maxR, near, far; uniform vec2 res; varying vec2 vUv;
+  float lin(float d){ float z = d * 2. - 1.; return 2. * near * far / (far + near - z * (far - near)); }
+  void main(){
+    float z = lin(texture2D(tDepth, vUv).x);
+    float coc = clamp(abs(z - focus) / (focus * range) - 0.15, 0., 1.) * maxR;
+    vec3 c = texture2D(tDiffuse, vUv).rgb; float wsum = 1.;
+    if (coc > 0.5) for (int k = 0; k < 24; k++) {
+      float a = float(k) * 2.39996, r = coc * sqrt((float(k) + 0.5) / 24.);
+      vec2 o = vec2(cos(a), sin(a)) * r / res;
+      float zs = lin(texture2D(tDepth, vUv + o).x); float cs = clamp(abs(zs - focus) / (focus * range) - 0.15, 0., 1.) * maxR;
+      float w = smoothstep(r - 1., r + 1., max(cs, coc * 0.5)) + 0.001;
+      c += texture2D(tDiffuse, vUv + o).rgb * w; wsum += w;
+    }
+    gl_FragColor = vec4(c / wsum, 1.);
+  }`
+};
+const GradeShader = {
+  uniforms: { tDiffuse: { value: null }, time: { value: 0 }, res: { value: new THREE.Vector2(W, H) }, fade: { value: 1 } },
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.); }`,
+  fragmentShader: `uniform sampler2D tDiffuse; uniform float time, fade; uniform vec2 res; varying vec2 vUv;
+  float h(vec2 p){ return fract(sin(dot(p, vec2(12.9898,78.233))) * 43758.5453); }
+  void main(){
+    vec2 uv = vUv;
+    // slight lens: chromatic fringe toward corners
+    vec2 d = uv - .5; float r2 = dot(d,d);
+    vec3 c = vec3(texture2D(tDiffuse, uv - d * r2 * 0.006).r, texture2D(tDiffuse, uv).g, texture2D(tDiffuse, uv + d * r2 * 0.006).b);
+    // warm grade, lifted blacks, gentle s-curve
+    c = c * vec3(1.05, 0.98, 0.86);
+    c = mix(c, c * c * (3. - 2. * c), 0.45);
+    c = c * 0.96 + vec3(0.016, 0.012, 0.008);
+    // vignette
+    float v = smoothstep(0.95, 0.25, length(d * vec2(1.25, 1.)));
+    c *= mix(0.32, 1.0, v);
+    // grain
+    float g = h(uv * res + fract(time * 13.7) * 100.) - .5;
+    c += g * 0.045 * (1. - c * 0.6);
+    gl_FragColor = vec4(c * fade, 1.);
+  }`
+};
+let depthRT;
+function renderView(camPos, look, focusDist, lampTarget, t = 0) {
+  camera.position.set(...camPos); camera.lookAt(...look); camera.updateMatrixWorld();
+  spot.position.set(lampTarget[0] - 22, 70, lampTarget[2] - 14); spot.target.position.set(...lampTarget);
+  dust.position.set(lampTarget[0], 0, lampTarget[2]);
+  // depth prepass
+  if (!depthRT) { depthRT = new THREE.WebGLRenderTarget(W, H); depthRT.depthTexture = new THREE.DepthTexture(W, H); }
+  renderer.setRenderTarget(depthRT); renderer.render(scene, camera); renderer.setRenderTarget(null);
+  bokehPass.uniforms.tDepth.value = depthRT.depthTexture;
+  bokehPass.uniforms.focus.value = focusDist; bokehPass.uniforms.range.value = 0.16; bokehPass.uniforms.maxR.value = 16 * W / 3840 * 2;
+  gradePass.uniforms.time.value = t;
+  composer.render();
+}
+window.setOverlays = function (t) {
+  // map label + document heroes drawn into the canvases
+  docCtx.drawImage(docBase, 0, 0);
+  const u = DPX / 100; docCtx.font = `600 ${130 * u}px Plex`; docCtx.textBaseline = 'middle';
+  for (const [i, s] of Object.entries(NAMED)) { docCtx.fillStyle = 'rgba(30,24,18,.9)'; docCtx.fillText(s, 340 * u, (900 + i * 165) * u); }
+  docCtx.font = `600 ${140 * u}px Plex`;
+  const y = (900 + ROWS * 165) * u; docCtx.fillText('Where in the World Is', 340 * u, y); docCtx.fillText('Osama bin Laden?', 340 * u, y + 150 * u);
+  docCtx.strokeStyle = 'rgba(178,30,22,.92)'; docCtx.lineWidth = 17 * u; docCtx.lineCap = 'round';
+  docCtx.beginPath(); for (let k = 0; k <= 140; k++) { const a = Math.PI * 0.92 + Math.PI * 2.18 * k / 140, w = 1 + 0.03 * Math.sin(k / 15) + 0.05 * k / 140; docCtx.lineTo((1222 + Math.cos(a) * 1022 * w) * u, y + (75 + Math.sin(a) * 235 * w - k / 140 * 26) * u); } docCtx.stroke();
+  docTex.needsUpdate = true;
+};
+window.views = {
+  discs: () => renderView([DX + 5, 16, DZ + 19], [DX - 0.5, 0.5, DZ - 1], 25, [DX, 0, DZ]),
+  compound: () => renderView([PINX - 1, 14, PINZ + 15], [PINX - 3.5, 0.8, PINZ - 2.5], 20.5, [PINX - 3, 0, PINZ - 2]),
+  abbottabad: () => renderView([PINX + 4, 10, PINZ + 12], [PINX + 3, 0.3, PINZ + 0.3], 15.5, [PINX + 2, 0, PINZ]),
+  title: () => renderView([DOC.x + 0.5, 21, DOC.z + 26.3 + 15], [DOC.x + 0.2, 0, DOC.z + 26.3], 25.5, [DOC.x, 0, DOC.z + 26]),
+  wide: () => renderView([8, 62, 72], [14, 0, 6], 82, [24, 0, 10]),
+};
+window.ready = (async () => {
+  await Promise.all(['700 10px Playfair', '700 10px PlayfairI', '600 10px Plex'].map(f => document.fonts.load(f)));
+  window.MAPIMG = await new Promise(r => { const im = new Image(); im.onload = () => r(im); im.src = 'assets/map_ams.jpg'; });
+  buildScene(); window.setOverlays(30); return true;
+})();
+</script></body></html>
