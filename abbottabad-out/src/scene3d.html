@@ -36,10 +36,11 @@ function vnoise(x, y) { const xi = Math.floor(x), yi = Math.floor(y), xf = x - x
 function fbm(x, y, o = 5) { let a = 0, f = 1, s = 0.5, n = 0; for (let i = 0; i < o; i++) { a += s * vnoise(x * f + i * 17.3, y * f - i * 9.1); n += s; f *= 2.03; s *= 0.5; } return a / n; }
 
 // ---------- world layout (1 unit ≈ 1 cm on the table) ----------
-const MAP = { w: 76, h: 52 };                // centred at origin, x right, z toward camera
+const MAP = { w: 76, h: 57 };                // centred at origin, x right, z toward camera
 const mapXZ = (mx, my) => [mx / 100 - MAP.w / 2, my / 100 - MAP.h / 2];
-const [PINX, PINZ] = mapXZ(5200, 2600);
-const DOC = { x: 50, z: -8, w: 24, h: 66 };
+const PINX = 1175 / 1448 * MAP.w - MAP.w / 2, PINZ = 840 / 1086 * MAP.h - MAP.h / 2;
+const DOC = { x: 52, z: -6, w: 24, h: 66 };
+const DX = -6, DZ = 22;
 
 // ---------- textures ----------
 function heightF(x, y) {
@@ -177,7 +178,7 @@ function buildScene() {
   renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
   renderer.setSize(W, H, false); renderer.setPixelRatio(1);
   renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-  renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.0;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 0.72;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   document.body.appendChild(renderer.domElement);
   scene = new THREE.Scene(); scene.background = new THREE.Color(0x050302);
@@ -192,10 +193,9 @@ function buildScene() {
   table.rotation.x = -Math.PI / 2; table.position.y = -0.05; table.receiveShadow = true; scene.add(table);
 
   // map
-  buildMapTexture();
-  mapTex = new THREE.CanvasTexture(mapCanvas); mapTex.colorSpace = THREE.SRGBColorSpace; mapTex.anisotropy = 8;
-  const mb = new THREE.CanvasTexture(bumpTexture(1024, 700, 4, [[0, 350, 1024, 350], [512, 0, 512, 700]]));
-  mapMesh = new THREE.Mesh(paperGeometry(MAP.w, MAP.h, 160, 110, 0.9, 1), new THREE.MeshStandardMaterial({ map: mapTex, bumpMap: mb, bumpScale: 0.6, roughness: 0.92 }));
+  mapTex = new THREE.CanvasTexture(window.MAPIMG); mapTex.colorSpace = THREE.SRGBColorSpace; mapTex.anisotropy = 8;
+  const mb = new THREE.CanvasTexture(bumpTexture(1024, 768, 4, [[0, 384, 1024, 384], [512, 0, 512, 768]]));
+  mapMesh = new THREE.Mesh(paperGeometry(MAP.w, MAP.h, 160, 120, 0.9, 1), new THREE.MeshStandardMaterial({ map: mapTex, bumpMap: mb, bumpScale: 0.6, roughness: 0.92 }));
   mapMesh.receiveShadow = true; mapMesh.castShadow = true; mapMesh.position.y = 0.05; scene.add(mapMesh);
 
   // document
@@ -224,7 +224,7 @@ function buildScene() {
   const r = rng(5);
   for (let i = 0; i < 7; i++) { const t = new THREE.Mesh(new THREE.SphereGeometry(0.28 + r() * 0.18, 10, 8), treeM); t.position.set(-2.1 + r() * 1.2, 0.75, -1.3 + r() * 2.6); t.castShadow = true; compound.add(t); }
   for (let i = 0; i < 9; i++) { const a = r() * 6.28, d = 3.4 + r() * 0.8; const h2 = new THREE.Mesh(new THREE.BoxGeometry(0.6 + r() * 0.5, 0.4 + r() * 0.4, 0.5 + r() * 0.4), roofM); h2.position.set(Math.cos(a) * d, 0.55, Math.sin(a) * d); h2.rotation.y = r(); h2.castShadow = h2.receiveShadow = true; compound.add(h2); }
-  compound.position.set(PINX + 6.5, 0.1, PINZ - 4.5); compound.rotation.y = -0.25; scene.add(compound);
+  compound.position.set(PINX - 7.5, 0.1, PINZ - 6.5); compound.rotation.y = -0.25; scene.add(compound);
 
   // pins
   const mkPin = (x, z) => {
@@ -240,7 +240,7 @@ function buildScene() {
 
   // discs + cases
   const caseM = new THREE.MeshPhysicalMaterial({ color: 0x0d0d0e, roughness: 0.25, clearcoat: 0.6 });
-  const [DX, DZ] = mapXZ(3600, 2650);
+
   for (const [dx, dz, ry] of [[-1.9, -0.1, -0.22], [2.3, 0.6, 0.17]]) {
     const c = new THREE.Mesh(new THREE.BoxGeometry(5.4, 0.7, 6.8), caseM); c.position.set(DX + dx, 0.45, DZ + dz); c.rotation.y = ry; c.castShadow = c.receiveShadow = true; scene.add(c);
     const lab = new THREE.Mesh(new THREE.PlaneGeometry(4.0, 1.2), new THREE.MeshStandardMaterial({ color: 0xd9d2c4, roughness: 0.9 })); lab.rotation.x = -Math.PI / 2; lab.position.set(0, 0.36, -2.2); c.add(lab);
@@ -313,7 +313,7 @@ const GradeShader = {
     vec3 c = vec3(texture2D(tDiffuse, uv - d * r2 * 0.006).r, texture2D(tDiffuse, uv).g, texture2D(tDiffuse, uv + d * r2 * 0.006).b);
     // warm grade, lifted blacks, gentle s-curve
     c = c * vec3(1.05, 0.98, 0.86);
-    c = mix(c, c * c * (3. - 2. * c), 0.25);
+    c = mix(c, c * c * (3. - 2. * c), 0.45);
     c = c * 0.96 + vec3(0.016, 0.012, 0.008);
     // vignette
     float v = smoothstep(0.95, 0.25, length(d * vec2(1.25, 1.)));
@@ -339,11 +339,6 @@ function renderView(camPos, look, focusDist, lampTarget, t = 0) {
 }
 window.setOverlays = function (t) {
   // map label + document heroes drawn into the canvases
-  mapCtx.drawImage(mapBase, 0, 0);
-  const S = 4096 / 7600; mapCtx.save(); mapCtx.scale(S, S);
-  mapCtx.font = '700 230px PlayfairI'; mapCtx.fillStyle = 'rgba(40,22,12,.9)'; mapCtx.textBaseline = 'middle';
-  mapCtx.fillText('Abbottabad', 5200 + 250, 2600 + 260);
-  mapCtx.restore(); mapTex.needsUpdate = true;
   docCtx.drawImage(docBase, 0, 0);
   const u = DPX / 100; docCtx.font = `600 ${130 * u}px Plex`; docCtx.textBaseline = 'middle';
   for (const [i, s] of Object.entries(NAMED)) { docCtx.fillStyle = 'rgba(30,24,18,.9)'; docCtx.fillText(s, 340 * u, (900 + i * 165) * u); }
@@ -354,13 +349,15 @@ window.setOverlays = function (t) {
   docTex.needsUpdate = true;
 };
 window.views = {
-  discs: () => renderView([-4, 16, 20], [-8.5, 0.5, 0.3], 23, [-6, 0, 1]),
-  compound: () => renderView([PINX + 2, 13, PINZ + 17], [PINX + 4, 0.8, PINZ - 2], 20, [PINX + 4, 0, PINZ - 2]),
+  discs: () => renderView([DX + 5, 16, DZ + 19], [DX - 0.5, 0.5, DZ - 1], 25, [DX, 0, DZ]),
+  compound: () => renderView([PINX - 1, 14, PINZ + 15], [PINX - 3.5, 0.8, PINZ - 2.5], 20.5, [PINX - 3, 0, PINZ - 2]),
+  abbottabad: () => renderView([PINX + 4, 10, PINZ + 12], [PINX + 3, 0.3, PINZ + 0.3], 15.5, [PINX + 2, 0, PINZ]),
   title: () => renderView([DOC.x + 0.5, 21, DOC.z + 26.3 + 15], [DOC.x + 0.2, 0, DOC.z + 26.3], 25.5, [DOC.x, 0, DOC.z + 26]),
   wide: () => renderView([8, 62, 72], [14, 0, 6], 82, [24, 0, 10]),
 };
 window.ready = (async () => {
   await Promise.all(['700 10px Playfair', '700 10px PlayfairI', '600 10px Plex'].map(f => document.fonts.load(f)));
+  window.MAPIMG = await new Promise(r => { const im = new Image(); im.onload = () => r(im); im.src = 'assets/map.jpg'; });
   buildScene(); window.setOverlays(30); return true;
 })();
 </script></body></html>
