@@ -118,5 +118,12 @@ Replace A/B with the phrase window; dips mark word/syllable boundaries.
   renders `film.html` from `http://127.0.0.1:8765`, encodes segments with x264
   CRF 14, concatenates and muxes the voiceover.
   Run both with `NODE_PATH=$(npm root -g)` so the pre-installed Playwright resolves.
+- `scripts/sfx.py` — code-synthesized sound design (numpy only): room tone, drone
+  swell, case/disc drops, paper slaps, pin slams, marker scribbles, highlighter
+  swipes, whooshes, riser, string run, final boom — each placed on a cue from
+  `cues.js` → `sfx.wav`. Always add SFX; a reel without them feels unfinished.
+  Mix under the voice with ducking and loudness-normalise:
+  `ffmpeg -i vo.mp3 -i sfx.wav -filter_complex "[0:a]aresample=48000,pan=stereo|c0=c0|c1=c0,apad=whole_dur=DUR,asplit=2[v][vk];[1:a]volume=7dB[s0];[s0][vk]sidechaincompress=threshold=0.1:ratio=2.5:attack=20:release=300[s];[v][s]amix=inputs=2:normalize=0:duration=first,alimiter=limit=0.95,loudnorm=I=-14:TP=-1.5:LRA=11" mix.wav`
+  then mux `mix.wav` onto the video (no re-render needed).
 - Assets expected by the template in `assets/`: `map_ams.jpg`, `aerial2011.jpg`,
   `walnut.jpg`, `paper.jpg`, `disc.png`, `list.png`, `vo.mp3`; plus `lib/` (three.js).
